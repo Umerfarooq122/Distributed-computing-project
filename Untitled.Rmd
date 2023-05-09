@@ -1,0 +1,513 @@
+---
+title: "Data 607: Final Project"
+author: "Farhana Akther"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Introduction: 
+
+
+```{r message=FALSE, warning=FALSE}
+library(fs)
+library(tidyverse)
+library(DBI)
+library(sparklyr)
+library(zoo)
+library(tidyquant)
+library(plotly)
+library(janitor)
+library(timetk)
+library(shiny)
+library(shinythemes)
+library(lubridate)
+library(TTR)
+```
+
+# Part 1: Spark Installation
+
+# Available for installation
+
+```{r}
+#spark_available_versions()
+```
+
+```{r}
+#spark_installed_versions()
+```
+
+
+# Connects to spark Locally
+
+```{r}
+#?spark_connect
+```
+
+# configuration setup 
+
+```{r}
+# conf <- spark_config()
+# conf$'sparklyr.cores.local' <- 4
+# conf$'sparklyr.shell.driver-memory' <- "6g"
+# conf$'spark.memory.fraction' <- 0.9
+```
+
+# Connect to spark Locally 1
+```{r warning=FALSE, message=FALSE}
+# config <- spark_config()
+# config$spark.master <- "local[*]"
+# sc<- spark_connect(config = config)
+```
+
+# Connect to spark Locally 2
+```{r warning=FALSE, message=FALSE}
+# sc<- spark_connect(
+#   master = "local",
+#   version = "3.3.2"
+# )
+```
+
+
+# Disconnceting:
+```{r}
+#spark_disconnect_all(sc)
+```
+
+# web interface
+
+```{r warning=FALSE, message=FALSE}
+#spark_web(sc)
+```
+
+
+```{r}
+#spark_disconnect_all(sc)
+```
+
+# PART 2:  FINANCIAL ANALYSIS---
+
+
+
+## Loading Stock Data
+
+```{r}
+stocks_data_tbl <- read.csv("/Users/Admin/Desktop/FinalProject_Data607/fh_5yrs.csv")
+```
+
+
+```{r}
+stocks_data_tbl$date<-as.Date(stocks_data_tbl$date) # changing dates from char to date format
+```
+
+```{r}
+str(stocks_data_tbl)
+```
+
+# Filter Stock Data (ex: AAPL, Amzn etc)
+
+```{r}
+stocks <-stocks_data_tbl%>%
+  filter(symbol %in% c('AAPL', 'AMZN', 'GOOG', 'MSFT', 'FB' ,'TSLA', 'CSCO', 'PEP', 'COST', 'SBUX', 'TEVA', 'INTC', 'GILD'))
+```
+
+# Copy Stocks example data to Spark
+
+```{r}
+# data_apple <-copy_to(
+#   sc,
+#   apple,
+#   "apple_data",
+#   Overwrite = TRUE
+# )
+```
+
+How many rows (Spark)?
+
+
+```{r}
+#sdf_nrow(apple)
+```
+
+
+### Stockes Simple Moving Average (MOVING AVERAGE (SMA):
+
+We will use *zoo* package to calculate a moving average (also called rolling average or running average) in R.
+
+
+
+```{r warning=FALSE, message=FALSE}
+# Convert data to zoo object
+stocks.zoo <- zoo(stocks$adjclose, order.by = stocks$date)
+```
+
+```{r warning=FALSE}
+# Calculate rolling statistics
+stocksma <- rollmean(stocks.zoo, k = 20, na.pad = TRUE, align = "right")
+stocksmax <- rollmax(stocks.zoo, k = 20, na.pad = TRUE, align = "right")
+stocksmedian <- rollmedian(stocks.zoo, k = 20,  na.pad = TRUE, align = "right")
+stockssum <- rollsum(stocks.zoo, k = 20, na.pad = TRUE, align = "right")
+```
+
+
+```{r}
+# Combine data into one data frame
+stocks_data <- data.frame(date = index(stocks.zoo),
+                         adjclose = coredata(stocks.zoo),
+                         ma = coredata(stocksma),
+                         max = coredata(stocksmax),
+                         median = coredata(stocksmedian),
+                         sum = coredata(stockssum))
+```
+
+```{r}
+stocks_data$date<-as.Date(stocks_data$date)
+```
+
+```{r}
+str(stocks_data)
+```
+
+```{r, warning=FALSE}
+# Create plot with multiple lines and a legend
+ggplot(data = stocks_data, aes(x = date)) +
+  geom_line(aes(y = adjclose, color = "Adjusted Close"), size = 0.8) +
+  geom_line(aes(y = ma, color = "Moving Average"), size = 0.8) +
+  geom_line(aes(y = max, color = "Moving Max"), size = 0.8) +
+  geom_line(aes(y = median, color = "Moving Median"), size = 0.8) +
+  geom_line(aes(y = sum, color = "Moving Sum"), size = 0.8) +
+  scale_color_manual(values = c("blue", "red", "green", "purple", "orange"),
+                     labels = c("Adjusted Close", "Moving Average", "Moving Max", "Moving Median", "Moving Sum")) +
+  labs(x = "Date", y = "Price",
+       title = "Stock Price and Rolling Statistics",
+       subtitle = "2015-2020") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "left")
+```
+
+# SPARK + DPLYR: NASDAQ STOCK RETURNS ANALYSIS ---
+
+```{r}
+stocks_metrics_query <- stocks_data_tbl %>%
+
+  group_by(symbol) %>%
+  arrange(date) %>%
+  mutate (lag = lag(adjclose, n = 1)) %>%
+  ungroup() %>%
+
+  mutate(returns = adjclose - lag) %>%
+  
+  group_by(symbol) %>%
+  summarise(
+   mean =  mean(returns, na.rm = TRUE),
+   sd = sd(returns, na.rm = TRUE),
+   count = n(),
+   last_date = max(date, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+#stocks_metrics_query %>% show_query()
+```
+
+```{r}
+#stocks_metric_tbl <- stocks_metrics_query %>% collect()
+```
+
+```{r}
+#stocks_metric_tbl 
+```
+
+```{r}
+#nasdaq_metric_tbl %>% write_rds("processed_data/nasdaq_metrics.rds")
+```
+
+## R DPLYR: APPLY SCREENING ---
+- Metric Cap > $1B (More Stable)
+- SD < 1 (Less  Volatile)
+- Count > 3 * 365 (More stock history to base performance)
+- Last Data = Max Date (Makes sure stock is still active)
+- Reward Metric: variation of Sharpe Ratio (Mean Return / Standard Deviation, Higher Better)
+
+```{r}
+#nasdaq_metric_tbl <- read_rds(processed_data/nasdaq_metrics.rds)
+```
+
+```{r}
+nasdaq_index_tbl <- read.csv("/Users/Admin/Desktop/FinalProject_Data607/nasdaq_index.csv")%>%
+  clean_names()
+```
+
+```{r}
+nasdaq_metric_screened_tbl <- stocks_metrics_query %>%
+  
+  inner_join(
+    nasdaq_index_tbl %>% select(symbol, name, market_cap),
+    by = "symbol"
+  ) %>%
+  
+  filter(market_cap > 1e9) %>%
+  
+  arrange(-sd) %>%
+  filter(
+    sd < 1,
+    count > 365 * 3,
+    last_date == max(last_date)
+  ) %>%
+   mutate(reward_metric = 2500 * mean/sd) %>%
+   mutate(desc = str_glue("
+                        Symbol: {symbol}
+                        mean: {round(mean, 3)}
+                        SD: {round(sd, 3)}
+                        N: {count}"))
+```
+
+# VISUALIZE SCREENING ---
+
+```{r warning=FALSE}
+g <- nasdaq_metric_screened_tbl %>%
+    ggplot(aes(log(sd), log(mean)))+
+    geom_point(aes(text = desc, color = reward_metric),
+    alpha = 0.5, shape = 21, size = 4) + 
+    geom_smooth() +
+    scale_color_distiller(type = "div") +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "black"),
+      plot.background = element_rect(fill = "black"),
+      text = element_text(colour = "white")
+      ) +
+  labs(title = "NASDAQ FINANCIAL ANALYSIS")
+
+ggplotly(g)
+```
+
+
+# Shiny 
+
+```{r}
+# Define UI
+ui <- fluidPage(
+  titlePanel("NASDAQ FINANCIAL ANALYSIS"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("market_cap",
+                  "Market Cap",
+                  min = 1e9,
+                  max = 1e12,
+                  step = 1e9,
+                  value = c(1e9, 1e12)),
+      sliderInput("sd",
+                  "Standard Deviation",
+                  min = 0,
+                  max = 1,
+                  step = 0.01,
+                  value = c(0, 1))
+    ),
+    mainPanel(
+      plotlyOutput("plot")
+    )
+  )
+)
+
+# Define server
+server <- function(input, output) {
+  output$plot <- renderPlotly({
+    filtered_tbl <- nasdaq_metric_screened_tbl %>%
+      filter(
+        market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2],
+        sd >= input$sd[1] & sd <= input$sd[2]
+      )
+    g <- filtered_tbl %>%
+      ggplot(aes(log(sd), log(mean))) +
+      geom_point(aes(text = desc, color = reward_metric),
+                 alpha = 0.5, shape = 21, size = 4) + 
+      geom_smooth() +
+      scale_color_distiller(type = "div") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ FINANCIAL ANALYSIS")
+    ggplotly(g)
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+
+
+
+# Visualize best symbols ---
+
+```{r}
+n <- 9
+best_symbol_tbl <- nasdaq_metric_screened_tbl %>%
+      arrange(-reward_metric) %>%
+      slice(1:n)
+best_symbols <- best_symbol_tbl$symbol
+stock_screen_data_tbl <- stocks_data_tbl %>%
+  filter(symbol %in% best_symbols)
+```
+
+```{r, message=FALSE}
+f <-stock_screen_data_tbl %>%
+  left_join(
+  best_symbol_tbl %>% select (symbol, name)
+  ) %>%
+  group_by(symbol, name) %>%
+  plot_time_series(date, adjclose, .smooth = TRUE, .facet_ncol = 3, .interactive = F) +
+  geom_line(color = "white") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "black"),
+    plot.background = element_rect(fill = "black"),
+    text = element_text(colour = "white"),
+    strip.text = element_text(colour = "white")
+  ) + 
+  labs(title = "NASDAQ Financial Analysis")
+ggplotly(f)
+```
+
+
+# Shiny for Both 
+
+
+```{r}
+# Define the UI
+ui <- fluidPage(
+  theme = shinytheme("slate"),
+  titlePanel("NASDAQ Financial Analysis"),
+  sidebarPanel(
+    sliderInput(
+      inputId = "market_cap",
+      label = "Market Cap",
+      min = 0,
+      max = 1e12,
+      value = c(1e9, 1e12),
+      step = 1e8,
+      sep = ""
+    ),
+    sliderInput(
+      inputId = "sd",
+      label = "Standard Deviation",
+      min = 0,
+      max = 1,
+      value = c(0, 1),
+      step = 0.01,
+      sep = ""
+    )
+  ),
+  mainPanel(
+      plotlyOutput("plot1"),
+      plotlyOutput("plot2")
+  )
+)
+
+# Define the server
+server <- function(input, output) {
+  
+  # Define the reactive filtered data
+  filtered_data <- reactive({
+    nasdaq_metric_screened_tbl <- stocks_metrics_query %>%
+      inner_join(
+        nasdaq_index_tbl %>% select(symbol, name, market_cap),
+        by = "symbol"
+      ) %>%
+      filter(market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2]) %>%
+      arrange(-sd) %>%
+      filter(
+        sd >= input$sd[1],
+        sd <= input$sd[2],
+        count > 365 * 3,
+        last_date == max(last_date)
+      ) %>%
+      mutate(reward_metric = 2500 * mean/sd) %>%
+      mutate(desc = str_glue("
+                        Symbol: {symbol}
+                        mean: {round(mean, 3)}
+                        SD: {round(sd, 3)}
+                        N: {count}"))
+    best_symbol_tbl <- nasdaq_metric_screened_tbl %>%
+      arrange(-reward_metric) %>%
+      slice(1:n)
+    best_symbols <- best_symbol_tbl$symbol
+    stocks_data_tbl %>%
+      filter(symbol %in% best_symbols)
+  })
+  
+  # Define the plot
+  output$plot2 <- renderPlotly({
+    filtered_data() %>%
+      left_join(
+        best_symbol_tbl %>% select(symbol, name)
+      ) %>%
+      group_by(symbol, name) %>%
+      plot_time_series(date, adjclose, .smooth = TRUE, .facet_ncol = 3, .interactive = F) +
+      geom_line(color = "white") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white"),
+        strip.text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ Financial Analysis")
+    
+  })
+  
+  # Plot the scatter plot of log(mean) vs. log(sd) with color-coded reward metric
+  output$plot1 <- renderPlotly({
+    filtered_tbl <- nasdaq_metric_screened_tbl %>%
+      filter(
+        market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2],
+        sd >= input$sd[1] & sd <= input$sd[2]
+      )
+    g <- filtered_tbl %>%
+      ggplot(aes(log(sd), log(mean))) +
+      geom_point(aes(text = desc, color = reward_metric),
+                 alpha = 0.5, shape = 21, size = 4) + 
+      geom_smooth() +
+      scale_color_distiller(type = "div") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ FINANCIAL ANALYSIS")
+ 
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+
+
+Conclusion: 
+
+
+Source: 
+https://therinspark.com/intro.html
+source: https://www.nasdaq.com/market-activity/stocks/screener
+https://www.kaggle.com/datasets/qks1lver/amex-nyse-nasdaq-stock-histories?select=fh_5yrs.csv
+https://www.rdocumentation.org/packages/zoo/versions/1.8-12
+https://search.r-project.org/CRAN/refmans/zoo/html/coredata.html
+https://statisticsglobe.com/moving-average-maximum-median-sum-of-time-series-in-r
+https://www.youtube.com/watch?v=rJawNrD3xlU&list=RDCMUCqQ_cxcNu1ekqHXDc-MbU_w&start_radio=1&t=3709s
+
+
+
+
+
