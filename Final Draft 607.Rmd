@@ -1,0 +1,760 @@
+---
+title: "Leveraging Apache Spark️ for Big Data and Recurrent Neural Network to Predict Stock Price"
+author: "Farhana Akther, Waheeb Algabri and Umer Farooq"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::downcute:
+    self_contained: true
+    default_style: "light"
+    downcute_theme: "default"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Abstract:
+
+This study entails the use of Apache Spark^TM to handle big financial data on your local machine using Rstudio. After the transformation of data, this study focus on creating a stock screener app that helps us to surf through all the stocks available in the big data. Once the stock has been screened out based on certain criteria i.e. market cap, volatility e.t.c. the stock's data has been fed into a recurrent neural network (RNN) using flatten layer and long-short term memory (LSTM) layer to predict the prices of the stocks by splitting the data into training and testing matrices. As quoted by Prof. Andrew Caitlin, *"Predicting the the prices of the stocks is an endless ambition"*, which is so true for the fact that, in order to predict the prices of a stock one will have to look at the stock data and learn the data before applying any particular model. Before using RNN with different layers, the study took a dip at Auto-regressive integrated moving average (ARIMA) models and  other neural networks but the prediction and model performances were not up to the mark.
+
+## Challenges in the Project:
+
+Each step in this project was a challenge in itself since there were not a lot of resources available but following three were the main challenges that we had to encounter in this project
+
+1) Storing large data set on a remote server i.e. any Database or Github.
+2) Transforming large data set.
+3) Stock Screener App.
+4) Finding and Working with the right algorithm/model to predict.
+
+### Storing large data set on a remote server:
+
+The study starts off with a very challenging task and that is to store the large data set (almost 1GB) somewhere remote so that our work is reproducible. Initially we considered MongoDB and IBM db2 but there free limit was 512 MB and our file was twice the size so we ended up using GITLFS to store large file on github. Now in order to achieve that we had to download GITLFS from the following link:
+https://git-lfs.com/
+
+Once we got the GITLFS then ran the following series of commands in command promt (terminal for mac) with an upload speed adjusted to less than 700 KB/sec:
+
+
+ 1. `git lfs install`
+ 2. `cd "The directory where you have the dataset"`
+ 3. `git lfs track "yourfilename.filetype"`
+ 4. `git add .gitattributes`
+ 5. `git add youfilename.type`
+ 6. `git commit -m "any comments"`
+ 7. `git push origin master`
+ 
+After running these commands we were able to upload large data set into github. For more details kindly refer back to GITLFS's link mentioned above.
+
+### Transforming Large Data set:
+
+The second biggest challenge in this study was to handle and transform big data (around 7 million observations) but thanks to distributed computing system like Apache Spark which made our work easier and quicker. We were able to transform our big data by connecting to spark cluster using `sparklyr` package. In order to use `sparklyr` package one have to install java, Scala and spark on to their local machine. Once the spark was ready to be fired up the large data set was pushed into spark environment and with the help of `dplyr` and `sparklyr` the data was transformed according to the requirements. 
+
+### Stock Screener App:
+
+The whole idea of this project primarily circles around handling big data in the field of finance and then pick out a perfect stock or the stock that suits your criteria and then using a model to predict the prices from the future. So in order to achieve that we had to come up with an app (shiny app) that can help us surf through all the stocks available in NASDAQ based on a criteria.
+
+### Finding and Working with the right algorithm/model for prediction:
+
+This one was by far one of the biggest challenge that we could encounter in our project. Since we were trying to achieve *"endless ambition"* we had to go through all the possible model out there to predict the prices of the stock. Auto-regressive integrated moving averages (ARIMA), Simple neural networks were tried out before finding an optimum solution in Recurrent neural network (RNN). The process in itself was very rugged but learning and result wise it was worth doing.
+
+## Setting up the environment:
+
+So before any further due let's load all the required packages and libraries into out environment but one thing should be noted down that not all the libraries were used in getting the final outcome:
+
+
+```{r loading-libraries, warning=FALSE, message=FALSE}
+library(fs)
+library(tidyverse)
+library(DBI)
+library(sparklyr)
+library(janitor)
+library(keras)
+library(future)
+library(tensorflow)
+library(tseries)
+library(forecast)
+library(zoo)
+library(mlbench)
+library(magrittr)
+library(neuralnet)
+library(plotly)
+library(shiny)
+library(shinythemes)
+library(timetk)
+```
+
+One thing that needs to be pointed out over here that TensorFlow and Keras might some users (windows mostly) problem so I would recommend to check stack overflow because there are numerous solutions available over there.
+
+## Connecting to Apache Spark:
+
+Now our environment is ready and we can load our big data and then push the file into spark cluster for transformation. In order to achieve that we have to connect to Spark for so below code chunk will connect you to spark providing that one have similar version of spark installed on their local machine. If you do not have spark installed on you local machine so can run the command `spark_install(version = "3.3.2")` to install spark on your local machine but make sure to install the latest version of Java JDK before connecting to spark. We can also configure our connection since master is our local machine so we can allocate certain power of our local machine to spark using configuration. Check out the Chapter 9: Tuning of book "Mastering the Spark in R" for more details on configuration and tuning. Here is the link for the mentioned book:
+
+https://therinspark.com/tuning.html#tuning-configuring
+
+```{r spark-connection, warning=FALSE}
+sc <- spark_connect(
+  master = "local",
+  version = "3.3.2"
+)
+```
+
+Now we are connected to spark you might see some action after running the code above in your environment pane's connection tab. Now we are ready to load the data into spark. In order to achieve that we'll first load the data into Rstudio and then afterwards we'll Push into spark cluster. Let's save the github link which holds our large data set into a variable
+
+```{r reading-url, warning=FALSE, message=FALSE}
+url<-"https://media.githubusercontent.com/media/Umerfarooq122/Data_sets/master/fh_5yrs.csv"
+```
+
+Now let's load the data set:
+
+```{r loading-data, warning=FALSE, message=FALSE}
+stocks_data_tbl <- read_csv(url)
+#stocks_data_tbl <- read.csv("C:/Users/umer5/Documents/Data_sets/fh_5yrs.csv")
+```
+
+```{r}
+knitr::kable(head(stocks_data_tbl))
+```
+
+Now we have our data set in our Rstudio so let's push it to Spark cluster using our connection:
+
+```{r copying-data-to-spark, warning=FALSE, message=FALSE}
+
+#Commented out for knitting reasons:
+
+#stocks_data_tbl <- copy_to(sc, stocks_data_tbl, name = "stocks_data_tbl", overwrite = TRUE)
+```
+
+## Transforming and Aggregation in Spark:
+
+Since we know that our data set has over 7 million observations and has been pushed to spark so now can perform some aggregation primarily to find out mean, returns, and standard deviations of each stock.
+
+```{r}
+stocks_metrics_query <- stocks_data_tbl %>%
+
+  group_by(symbol) %>%
+  arrange(date) %>%
+  mutate (lag = lag(adjclose, n = 1)) %>%
+  ungroup() %>%
+
+  mutate(returns = adjclose - lag) %>%
+  
+  group_by(symbol) %>%
+  summarise(
+   mean =  mean(returns, na.rm = TRUE),
+   sd = sd(returns, na.rm = TRUE),
+   count = n(),
+   last_date = max(date, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+Once the aggregation is performed we can recollect the aggregated data set using the following code chunk
+
+```{r getting-data-from-spark, warning=FALSE, message=FALSE}
+#stocks_metrics_query <- stocks_metrics_query|> collect()
+```
+
+## Stock Screener with Shiny:
+
+Now that we have our data transformed and aggregated We are ready to screen through it for a stock that we want to predict but we are missing some fundamental data i.e. market cap, name e.t.c, for stocks so let's load the NASDAQ index and performed an inner join with our aggregated data:
+
+```{r loading-index, warning=FALSE, message=FALSE}
+nasdaq_index_tbl <- read.csv("https://raw.githubusercontent.com/Umerfarooq122/Distributed-computing-project/main/nasdaq_index.csv")%>%
+  clean_names()
+```
+
+Our Index is ready for performing an inner join:
+
+```{r}
+nasdaq_metric_screened_tbl <- stocks_metrics_query %>%
+  
+  inner_join(
+    nasdaq_index_tbl %>% select(symbol, name, market_cap),
+    by = "symbol"
+  ) %>%
+  
+  filter(market_cap > 1e9) %>%
+  
+  arrange(-sd) %>%
+  filter(
+    sd < 1,
+    count > 365 * 3,
+    last_date == max(last_date)
+  ) %>%
+   mutate(reward_metric = 2500 * mean/sd) %>%
+   mutate(desc = str_glue("
+                        Symbol: {symbol}
+                        mean: {round(mean, 3)}
+                        SD: {round(sd, 3)}
+                        N: {count}"))
+```
+
+Let's plot the data using ggplot and plotly.
+
+```{r warning=FALSE}
+g <- nasdaq_metric_screened_tbl %>%
+    ggplot(aes(log(sd), log(mean)))+
+    geom_point(aes(text = desc, color = reward_metric),
+    alpha = 0.5, shape = 21, size = 4) + 
+    geom_smooth() +
+    scale_color_distiller(type = "div") +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "black"),
+      plot.background = element_rect(fill = "black"),
+      text = element_text(colour = "white")
+      ) +
+  labs(title = "NASDAQ FINANCIAL ANALYSIS")
+
+ggplotly(g)
+```
+
+The following code chunk contains the code for shiny app for the graph above which allows us to navigated through all the stocks based on standard deviation and market cap.
+
+```{r eval=FALSE}
+# Define UI
+ui <- fluidPage(
+  titlePanel("NASDAQ FINANCIAL ANALYSIS"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("market_cap",
+                  "Market Cap",
+                  min = 1e9,
+                  max = 1e12,
+                  step = 1e9,
+                  value = c(1e9, 1e12)),
+      sliderInput("sd",
+                  "Standard Deviation",
+                  min = 0,
+                  max = 1,
+                  step = 0.01,
+                  value = c(0, 1))
+    ),
+    mainPanel(
+      plotlyOutput("plot")
+    )
+  )
+)
+
+# Define server
+server <- function(input, output) {
+  output$plot <- renderPlotly({
+    filtered_tbl <- nasdaq_metric_screened_tbl %>%
+      filter(
+        market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2],
+        sd >= input$sd[1] & sd <= input$sd[2]
+      )
+    g <- filtered_tbl %>%
+      ggplot(aes(log(sd), log(mean))) +
+      geom_point(aes(text = desc, color = reward_metric),
+                 alpha = 0.5, shape = 21, size = 4) + 
+      geom_smooth() +
+      scale_color_distiller(type = "div") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ FINANCIAL ANALYSIS")
+    ggplotly(g)
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+Let's pick out the top nine stocks that are performing very well.
+
+```{r}
+n <- 9
+best_symbol_tbl <- nasdaq_metric_screened_tbl %>%
+      arrange(-reward_metric) %>%
+      slice(1:n)
+best_symbols <- best_symbol_tbl$symbol
+stock_screen_data_tbl <- stocks_data_tbl %>%
+  filter(symbol %in% best_symbols)
+```
+
+
+```{r, message=FALSE}
+f <-stock_screen_data_tbl %>%
+  left_join(
+  best_symbol_tbl %>% select (symbol, name)
+  ) %>%
+  group_by(symbol, name) %>%
+  plot_time_series(date, adjclose, .smooth = TRUE, .facet_ncol = 3, .interactive = F) +
+  geom_line(color = "white") +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "black"),
+    plot.background = element_rect(fill = "black"),
+    text = element_text(colour = "white"),
+    strip.text = element_text(colour = "white")
+  ) + 
+  labs(title = "NASDAQ Financial Analysis")
+ggplotly(f)
+```
+
+The Following code contains the Shiny app for that depicts an overall risk factor and the nine best performing stocks dynamically:
+
+```{r eval=FALSE}
+# Define the UI
+ui <- fluidPage(
+  theme = shinytheme("slate"),
+  titlePanel("NASDAQ Financial Analysis"),
+  sidebarPanel(
+    sliderInput(
+      inputId = "market_cap",
+      label = "Market Cap",
+      min = 0,
+      max = 1e12,
+      value = c(1e9, 1e12),
+      step = 1e8,
+      sep = ""
+    ),
+    sliderInput(
+      inputId = "sd",
+      label = "Standard Deviation",
+      min = 0,
+      max = 1,
+      value = c(0, 1),
+      step = 0.01,
+      sep = ""
+    )
+  ),
+  mainPanel(
+      plotlyOutput("plot1"),
+      plotlyOutput("plot2")
+  )
+)
+
+# Define the server
+server <- function(input, output) {
+  
+  # Define the reactive filtered data
+  filtered_data <- reactive({
+    nasdaq_metric_screened_tbl <- stocks_metrics_query %>%
+      inner_join(
+        nasdaq_index_tbl %>% select(symbol, name, market_cap),
+        by = "symbol"
+      ) %>%
+      filter(market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2]) %>%
+      arrange(-sd) %>%
+      filter(
+        sd >= input$sd[1],
+        sd <= input$sd[2],
+        count > 365 * 3,
+        last_date == max(last_date)
+      ) %>%
+      mutate(reward_metric = 2500 * mean/sd) %>%
+      mutate(desc = str_glue("
+                        Symbol: {symbol}
+                        mean: {round(mean, 3)}
+                        SD: {round(sd, 3)}
+                        N: {count}"))
+    best_symbol_tbl <- nasdaq_metric_screened_tbl %>%
+      arrange(-reward_metric) %>%
+      slice(1:n)
+    best_symbols <- best_symbol_tbl$symbol
+    stocks_data_tbl %>%
+      filter(symbol %in% best_symbols)
+  })
+  
+  # Define the plot
+  output$plot2 <- renderPlotly({
+    filtered_data() %>%
+      left_join(
+        best_symbol_tbl %>% select(symbol, name)
+      ) %>%
+      group_by(symbol, name) %>%
+      plot_time_series(date, adjclose, .smooth = TRUE, .facet_ncol = 3, .interactive = F) +
+      geom_line(color = "white") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white"),
+        strip.text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ Financial Analysis")
+    
+  })
+  
+  # Plot the scatter plot of log(mean) vs. log(sd) with color-coded reward metric
+  output$plot1 <- renderPlotly({
+    filtered_tbl <- nasdaq_metric_screened_tbl %>%
+      filter(
+        market_cap >= input$market_cap[1] & market_cap <= input$market_cap[2],
+        sd >= input$sd[1] & sd <= input$sd[2]
+      )
+    g <- filtered_tbl %>%
+      ggplot(aes(log(sd), log(mean))) +
+      geom_point(aes(text = desc, color = reward_metric),
+                 alpha = 0.5, shape = 21, size = 4) + 
+      geom_smooth() +
+      scale_color_distiller(type = "div") +
+      theme_minimal() +
+      theme(
+        panel.background = element_rect(fill = "black"),
+        plot.background = element_rect(fill = "black"),
+        text = element_text(colour = "white")
+      ) +
+      labs(title = "NASDAQ FINANCIAL ANALYSIS")
+ 
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+
+## Predicting the future price of a stock:
+
+After using the tools above let's say one came up with the stock that they want to invest in but they are not sure if that is going to be the right stock to get them where they want to be. This is where this section of the study comes in, to come up with a model that can predict the prices of a stock. For instance, we came up with stock like Garmin (symbol `GRMN`) and we want to predict the prices of Garmin for the future using the data that we have available. In this particular section we will focus on predicting the daily high price since a lot of transaction are usually preset orders and takes place as soon as the stock hit the target price. The reason why we choose Garmin stock is that it is medium popular stock so there was not much available for references plus the data that we will use to train our model follows a completely different trend than the data we will be using for testing. Below code chunk will filter out the Garmin from the big data.
+
+```{r}
+grmn <- stocks_data_tbl%>%
+  filter(symbol=="GRMN")
+```
+
+Now we have our Garmin stock data with us let display the first few rows:
+
+```{r}
+knitr::kable(head(grmn))
+```
+
+Everything looks great and since we will be predicting the daily high price so let plot the graph and check out the general trend 
+
+```{r DataExploration}
+ggplot(grmn, aes(x = 1:nrow(grmn), y = high)) + geom_line()+theme_bw()
+
+ggplot(grmn[900:1385, ], aes(x = 900:1385, y = high)) + geom_line()+theme_bw()
+```
+
+### Data preparation:
+
+Since we will be using a recurrent neural network so we will have to prepare our data because neural network data as normalized data matrix rather than data frame to let's do that. First we will remove any un-necessary columns from our data and convert it into matrix. After that we  will normalize our data.
+
+```{r removing-columns, warning=FALSE, message=FALSE}
+data <- grmn[, -1]
+data <-data.matrix(data[, -7])
+```
+
+```{r normalizing-data}
+mean <- apply(data, 2, mean)
+std <- apply(data, 2, sd)
+data <- scale(data, center = mean, scale = std)
+
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+max <- apply(data,2,max)
+min <- apply(data,2,min)
+
+data <- apply(data, 2, normalize)
+
+```
+
+Let's do a quick plot of normalized data to see if everything is working fine. First plot is the data that we will using to train our model
+
+```{r plot-normalized-training}
+plot(data[1:900,3 ])
+```
+
+Now lets plot the data that we will be using the test the model
+
+```{r plot-normalized-test}
+plot(data[900:1385,3 ])
+```
+
+As we can see that there is a huge difference in the trend of training and testing but we will try get as close as we can to the testing data.
+
+### Recurrent Neural Network with Flatten layer:
+
+Recurrent neural networks (RNNs) are the state of the art algorithm for sequential data. While traditional deep neural networks assume that inputs and outputs are independent of each other, the output of recurrent neural networks depend on the prior elements within the sequence which makes it more effective in learning any major and minor trends of sequential data like stock. Dependencies on prior elements was  one the main reason that pushed us towards using RNN since most financial experts while performing technical analysis looks at the historic data to predict or the project the prices of a stock for the future. 
+
+Now in order to feed the data to our model we will be using this generator function to optimize our random access memory (RAM) as recurrent neural network looks back at certain values (assigned by user) so it spreads that in the form of matrix in the RAM of a machine which can be burn out your memory while performing modeling on large data. Generator function actually feeds the data to model in the form of batches. You can find more detail about it from the link mentioned below:
+
+https://blogs.rstudio.com/ai/posts/2017-12-20-time-series-forecasting-with-recurrent-neural-networks/
+
+
+```{r Generators}
+generator <- function(data,
+                      lookback,
+                      delay,
+                      min_index,
+                      max_index,
+                      shuffle = FALSE,
+                      batch_size = 64,
+                      step = 3) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <-
+        sample(c((min_index + lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i + batch_size - 1, max_index))
+      i <<- i + length(rows)
+    }
+    samples <- array(0, dim = c(length(rows),
+                                lookback / step,
+                                dim(data)[[-1]]))
+    targets <- array(0, dim = c(length(rows)))
+    
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]] - 1,
+                     length.out = dim(samples)[[2]])
+      samples[j, , ] <- data[indices, ]
+      targets[[j]] <- data[rows[[j]] + delay, 2]
+    }
+    list(samples, targets)
+  }
+}
+
+lookback <- 50
+step <- 3
+delay <- 22
+batch_size <- 32
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+ min_index = 1,
+max_index = 1000,
+  shuffle = FALSE,
+  step = step,
+ batch_size = batch_size)
+```
+
+Our generator function is ready so now we can train our data using recurrent neural network with flatten layer. Flatten layer is used to make the multidimensional input one-dimensional, commonly used in the transition from the convolution layer to the full connected layer.
+
+```{r flatten-training, warning=FALSE, message=FALSE}
+
+lookback <- 24
+step <- 1
+delay <- 22
+batch_size <- 32
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 900,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+train_gen_data <- train_gen()
+
+model <- keras_model_sequential() %>%
+  layer_flatten(input_shape = c(lookback / step, dim(data)[-1])) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 1)
+
+summary(model)
+
+```
+
+We can see our model's summary as above. Now we can compile our model and for this compilation we will use loss as mean absolute error with a batch size of 32 and epochs = 20.
+
+
+```{r}
+
+model %>% compile(optimizer = optimizer_rmsprop(),
+                  loss = "mae")
+
+history <- model %>% fit(
+  train_gen_data[[1]],train_gen_data[[2]],
+  batch_size = 32,
+  epochs = 20,
+  use_multiprocessing = T
+)
+```
+
+Now our model is compiled and ready to be used for prediction:
+
+```{r}
+  batch_size_plot <- 436
+  lookback_plot <- lookback
+  step_plot <- 1 
+  
+  pred_gen <- generator(
+    data,
+    lookback = lookback_plot,
+    delay = 0,
+    min_index = 900,
+    max_index = 1385,
+    shuffle = FALSE,
+    step = step_plot,
+    batch_size = batch_size_plot
+  )
+  
+  pred_gen_data1 <- pred_gen()
+  
+V1 = seq(1, length(pred_gen_data1[[2]]))
+  
+plot_data <-
+    as.data.frame(cbind(V1, pred_gen_data1[[2]]))
+
+inputdata <- pred_gen_data1[[1]]
+dim(inputdata) <- c(batch_size_plot, lookback,6)
+  
+pred_out <- model %>%
+    predict(inputdata) 
+```
+
+```{r}  
+  plot_data <-
+    cbind(plot_data, pred_out)
+  
+  p <-
+    ggplot(plot_data, aes(x = V1, y = V2)) + geom_point(colour = "blue", size = 0.5,alpha=0.8)
+  p <-
+    p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.5 ,alpha=0.8)+theme_bw()
+  
+  
+p
+```
+
+So the red points on the graph above is the predicted data while blue point are the actually test data points and we can see that the prediction came out really good but we will try another variant of recurrent neural network and see if we can get any better results.
+
+### Recurrent neural network with LSTM:
+
+This is a popular RNN architecture, which was introduced by Sepp Hochreiter and Juergen Schmidhuber as a solution to vanishing gradient problem. LSTM is a type of RNN with higher memory power to remember the outputs of each node for a more extended period to produce the outcome for the next node efficiently.
+
+LSTM networks combat the RNN's vanishing gradients or long-term dependence issue. Gradient vanishing refers to the loss of information in a neural network as connections recur over a longer period. 
+
+Now in order to apply recurrent neural network to our data we have to convert the the data that has to be fed to the model into arrays so the below code chunk generate arrays.
+
+```{r GeneratingArray}
+
+set.seed(12)
+T_data <- data[1:900, 2]
+
+x1 <- data.frame()
+for (i in 1:900) {
+  x1 <- rbind(x1, t(rev(T_data[i:(i + 24)])))
+  if(i%%30 == 0){print(i)}
+}
+
+x1 <- x1[,order(ncol(x1):1)]
+
+x <- as.matrix(x1[,-24])
+y <- as.matrix(x1[, 24])
+
+dim(x) <- c(900, 24, 1)
+
+```
+
+Now we can use the arrays to be fed to the model with LSTM layer:
+
+```{r LSTM on precalculated Matrix, warning=FALSE, message=FALSE}
+set.seed(123)
+model <- keras_model_sequential() %>%
+  layer_lstm(units = 64, input_shape = c(24, 1)) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dense(units = 8, activation = "relu") %>%
+  layer_dense(units = 1, activation = "relu") 
+
+summary(model)
+
+model %>% compile(loss = 'mean_squared_error', optimizer = 'adam',metrics='mse')
+
+history <-
+  model %>% fit (
+    x,
+    y,
+    batch_size = 32,
+    epochs = 20,
+    validation_split = 0.1,
+    use_multiprocessing = T
+  )
+
+#validation_data = val_gen,
+#validation_steps = val_steps
+
+plot(history)
+```
+
+Now our model is ready and we can go ahead for prediction and plotting the predicted data to compare it with actual testing data.
+
+```{r Plot Result 1, warning=FALSE, message=FALSE}
+set.seed(12)  
+  batch_size_plot <- 436
+  lookback_plot <- 24
+  step_plot <- 1 
+  
+  pred_gen <- generator(
+    data,
+    lookback = lookback_plot,
+    delay = 0,
+    min_index = 900,
+    max_index = 1385,
+    shuffle = FALSE,
+    step = step_plot,
+    batch_size = batch_size_plot
+  )
+  
+  pred_gen_data <- pred_gen()
+
+  V1 = seq(1, length(pred_gen_data[[2]]))
+  
+  plot_data <-
+    as.data.frame(cbind(V1, pred_gen_data[[2]]))
+  
+  inputdata <- pred_gen_data[[1]][,,2]
+  dim(inputdata) <- c(batch_size_plot,lookback_plot, 1)
+  
+  pred_out <- model %>%
+    predict(inputdata) 
+  
+  plot_data <-
+    cbind(plot_data, pred_out)
+  
+  p <-
+    ggplot(plot_data, aes(x = V1, y = V2)) + geom_point( colour = "blue", size = 0.5,alpha=0.8)
+  p <-
+    p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.5 ,alpha=0.8)
+  
+  p
+```
+
+As we can see that the predicted points (Red dots) closely follows the actual points (blue ones) so this model predict much better than RNN with flatten layer.
+
+## Conclusion and future work: 
+
+This study covers almost all aspects of a data scientist in the field of finance. Initially, it starts off with handling and aggregating large financial data set with the help of distributed computed like Apache Spark. It pushes the file to Spark cluster then performs all the transformation and aggregation functions from dplyr and sparklyr and then copy back the aggregated file to rstudio environment. After aggregation this study focus on using the aggregated data to come up with an app (shiny app) that can help us in screening out the stock from that financial data set we want to invest in. Once the the favorable stock is screened out then the study focuses on the creating a model that could help us in predicting the future daily high price of the stock. Not included in the study but jabs with thrown at Auto-regressive integrated moving averages and neural networks but of no avail. Finally,  recurrent neural network with long-short term memory layer did perform accordingly and a very good prediction was achieved by the model upon testing it against the actual data.
+
+This study can be further improve in a way that our stock screener can be updated to add more fundamental indicators like price-to-ratio ($P/B$), price-to-earning ($P/E$) ratio and return-on-investment ($ROI$) e.t.c. to get a much better evaluation during the screening of a stock out the pool of 4.5k+ stocks. Layers like Gated recurrent unit (GRU) and bidirectional can be tried out for much better fit.
+
+## References:
+
+1) https://therinspark.com/intro.html
+
+2) https://www.nasdaq.com/market-activity/stocks/screener
+
+3) https://www.kaggle.com/datasets/qks1lver/amex-nyse-nasdaq-stock-histories?select=fh_5yrs.csv
+
+4) https://www.rdocumentation.org/packages/zoo/versions/1.8-12
+
+5) https://search.r-project.org/CRAN/refmans/zoo/html/coredata.html
+
+6) https://statisticsglobe.com/moving-average-maximum-median-sum-of-time-series-in-r
+
+7) https://www.youtube.com/watch?v=rJawNrD3xlU&list=RDCMUCqQ_cxcNu1ekqHXDc-MbU_w&start_radio=1&t=3709s
+
+8) https://www.ibm.com/topics/recurrent-neural-networks#:~:text=A%20recurrent%20neural%20network%20(RNN,data%20or%20time%20series%20data.
+
+9) https://www.turing.com/kb/recurrent-neural-networks-and-lstm
